@@ -1,6 +1,6 @@
-# app.py
 import streamlit as st
 import os
+import json
 import tempfile
 from google.cloud import storage
 from ultralytics import YOLO
@@ -17,15 +17,23 @@ if 'model' not in st.session_state:
 def initialize_gcs_client():
     """Google Cloud Storageクライアントの初期化"""
     try:
-        # Streamlit Secretsから認証情報を取得
-        credentials_info = st.secrets["gcp_service_account"]
-        # GCSクライアントの初期化
-        storage_client = storage.Client.from_service_account_info(credentials_info)
+        # サービスアカウントJSONファイルのパスを指定
+        service_account_path = os.path.join('config', 'service_account.json')
+        
+        if os.path.exists(service_account_path):
+            # JSONファイルから認証情報を読み込む
+            storage_client = storage.Client.from_service_account_json(service_account_path)
+        else:
+            # バックアップとしてStreamlit Secretsを使用
+            credentials_info = st.secrets["gcp_service_account"]
+            storage_client = storage.Client.from_service_account_info(credentials_info)
+            
         return storage_client
     except Exception as e:
         st.error(f"GCSクライアントの初期化に失敗しました: {str(e)}")
         return None
 
+# 以下の関数は変更なし
 def download_model_from_gcs(storage_client, bucket_name, blob_name):
     """GCSからモデルをダウンロード"""
     try:
