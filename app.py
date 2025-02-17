@@ -54,7 +54,7 @@ def load_yolo_model():
         if storage_client:
             model_path = download_model_from_gcs(
                 storage_client,
-                "your-bucket-name",  # あなたのバケット名に変更してください
+                "yolo-v8-training",  # あなたのバケット名に変更してください
                 "trained_models/best.pt"  # モデルのパスを適切に設定してください
             )
             if model_path:
