@@ -8,6 +8,7 @@ import shutil
 import numpy as np
 from PIL import Image
 import io
+import cv2  # Newly added import
 
 # アプリケーションのタイトルを設定
 st.title("YOLO セグメンテーションアプリ")
@@ -63,7 +64,33 @@ def load_yolo_model():
                 st.session_state.model = YOLO(model_path)
                 os.unlink(model_path)  # 一時ファイルを削除
 
-def process_image(image_file):
+def mm_to_pixels(mm: float, dpi: float = 300.0, scale: float = 0.01) -> int:
+    """
+    Convert a real-world length (in mm) to the number of pixels given the DPI and scale.
+    scale=0.01 means 1:100 (1 mm in the diagram is 100 mm in real life).
+    """
+    inch = mm / 25.4  # 1 inch = 25.4 mm
+    px = inch * dpi
+    # Apply scale factor for 1:100
+    px *= (1.0 / scale)
+    return int(round(px))
+
+def offset_mask_by_distance(mask: np.ndarray, offset_px: int) -> np.ndarray:
+    """
+    Given a binary segmentation mask and an offset in pixels,
+    shrink the mask inward by 'offset_px' using distance transform.
+    """
+    # Ensure mask is binary (0 or 1)
+    binary_mask = (mask > 0).astype(np.uint8)
+
+    # Distance transform (L2)
+    dist = cv2.distanceTransform(binary_mask, cv2.DIST_L2, 5)
+
+    # Keep only points where distance >= offset_px
+    shrunk_mask = (dist >= offset_px).astype(np.uint8)
+    return shrunk_mask
+
+def process_image(image_file, offset_m: float = 5.0):
     """画像の処理と推論の実行"""
     try:
         # 画像をバイトデータとして読み込む
@@ -77,15 +104,44 @@ def process_image(image_file):
             # 推論の実行（plot=Trueで結果を描画）
             results = st.session_state.model(temp_image_file.name, task='segment')
             
-            # 結果の画像を取得
-            result_image = results[0].plot()  # この行で検出結果が描画された画像を取得
-            
-            # NumPy配列をPIL Imageに変換
-            if isinstance(result_image, np.ndarray):
-                result_image = Image.fromarray(result_image[..., ::-1])  # BGR to RGB
+            # 推論結果のプロット画像 (OpenCV BGR形式のNumPy配列)
+            result_image = results[0].plot()
+            # (height, width, 3)
+            h_img, w_img = result_image.shape[:2]
+
+            # セグメンテーションマスクを取り出し、一括で合わせる
+            if results[0].masks is not None:
+                # Initialize a combined mask with the same size as the result_image
+                combined_mask = np.zeros((h_img, w_img), dtype=np.uint8)
+
+                for seg_data in results[0].masks.data:
+                    mask_np = seg_data.cpu().numpy().astype(np.uint8)
+
+                    # The YOLO mask is typically the shape the model used for inference (e.g., 480x640).
+                    # Resize it to match the result_image shape so we can combine them properly.
+                    mask_resized = cv2.resize(
+                        mask_np,
+                        (w_img, h_img),  # (width, height) order
+                        interpolation=cv2.INTER_NEAREST
+                    )
+                    combined_mask = np.maximum(combined_mask, mask_resized)
+
+                # ピクセルオフセットを計算 (例: 5m)
+                offset_px = mm_to_pixels(offset_m * 1000.0, dpi=300.0, scale=0.01)
+
+                # マスクを縮小（セットバック）
+                shrunk_mask = offset_mask_by_distance(combined_mask, offset_px=offset_px)
+
+                # 縮小後の輪郭を緑色で描画
+                contours, _ = cv2.findContours(shrunk_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(result_image, contours, -1, (0, 255, 0), 2)
             
             # 一時ファイルの削除
             os.unlink(temp_image_file.name)
+
+            # NumPy配列をPIL Imageに変換 (BGR -> RGB)
+            if isinstance(result_image, np.ndarray):
+                result_image = Image.fromarray(result_image[..., ::-1])
             
             return result_image
             
@@ -100,6 +156,9 @@ def main():
     if st.session_state.model is None:
         st.warning("モデルのロードに失敗しました。設定を確認してください。")
         return
+
+    # セットバック距離を指定（メートル単位）
+    offset_m = st.number_input("セットバック距離 (m)", min_value=0.0, max_value=50.0, value=5.0, step=1.0)
     
     # 画像のアップロード
     uploaded_file = st.file_uploader("セグメンテーションする画像をアップロードしてください", type=["jpg", "jpeg", "png"])
@@ -111,10 +170,10 @@ def main():
         # 進捗状態を表示
         with st.spinner('セグメンテーションを実行中...'):
             # 推論の実行と結果の表示
-            result_image = process_image(uploaded_file)
+            result_image = process_image(uploaded_file, offset_m=offset_m)
             
             if result_image is not None:
-                st.image(result_image, caption="セグメンテーション結果", use_container_width=True)
+                st.image(result_image, caption="セグメンテーション結果（セットバック後）", use_container_width=True)
                 
                 # 結果の画像をダウンロード可能にする
                 buf = io.BytesIO()
