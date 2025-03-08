@@ -90,6 +90,51 @@ def offset_mask_by_distance(mask: np.ndarray, offset_px: int) -> np.ndarray:
     shrunk_mask = (dist >= offset_px).astype(np.uint8)
     return shrunk_mask
 
+def draw_910mm_grid(
+    image: np.ndarray,
+    shrunk_mask: np.ndarray,
+    cell_mm: float = 910.0,
+    dpi: float = 300.0,
+    scale: float = 0.01
+) -> np.ndarray:
+    """
+    Draw 910mm (半畳) grid lines on the image, but only in regions
+    where shrunk_mask indicates valid buildable area (1).
+
+    Args:
+        image (np.ndarray): The original result image (BGR or after YOLO plot).
+        shrunk_mask (np.ndarray): Binary mask (0/1) for buildable area.
+        cell_mm (float): Grid cell size in mm (910mm by default).
+        dpi (float): DPI used for unit conversion.
+        scale (float): The scale factor for the diagram (e.g., 1:100).
+
+    Returns:
+        np.ndarray: Image with the 910mm grid lines drawn where mask=1.
+    """
+    out_img = image.copy()
+    h, w = shrunk_mask.shape[:2]
+
+    # Convert 910mm to pixels
+    cell_px = mm_to_pixels(cell_mm, dpi, scale)
+
+    # Step through in increments of cell_px
+    for y in range(0, h, cell_px):
+        for x in range(0, w, cell_px):
+            # We'll define the cell's center
+            center_x = x + cell_px // 2
+            center_y = y + cell_px // 2
+
+            if center_x >= w or center_y >= h:
+                continue
+
+            # If the center is inside shrunk_mask, draw the cell boundary
+            if shrunk_mask[center_y, center_x] > 0:
+                p1 = (x, y)
+                p2 = (x + cell_px, y + cell_px)
+                cv2.rectangle(out_img, p1, p2, (255, 0, 0), 1)  # Blue lines
+
+    return out_img
+
 def process_image(image_file, offset_m: float = 5.0):
     """画像の処理と推論の実行"""
     try:
@@ -132,9 +177,18 @@ def process_image(image_file, offset_m: float = 5.0):
                 # マスクを縮小（セットバック）
                 shrunk_mask = offset_mask_by_distance(combined_mask, offset_px=offset_px)
 
-                # 縮小後の輪郭を緑色で描画
+                # 縮小後の輪郭を緑色で描画（線幅太め）
                 contours, _ = cv2.findContours(shrunk_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                cv2.drawContours(result_image, contours, -1, (0, 255, 0), 2)
+                cv2.drawContours(result_image, contours, -1, (0, 255, 0), 3)
+
+                # 910mmグリッドを描画
+                result_image = draw_910mm_grid(
+                    image=result_image,
+                    shrunk_mask=shrunk_mask,
+                    cell_mm=910.0,   # 半畳(910mm) 
+                    dpi=300.0,
+                    scale=0.01
+                )
             
             # 一時ファイルの削除
             os.unlink(temp_image_file.name)
@@ -173,7 +227,7 @@ def main():
             result_image = process_image(uploaded_file, offset_m=offset_m)
             
             if result_image is not None:
-                st.image(result_image, caption="セグメンテーション結果（セットバック後）", use_container_width=True)
+                st.image(result_image, caption="セグメンテーション結果（セットバック＆910mmグリッド）", use_container_width=True)
                 
                 # 結果の画像をダウンロード可能にする
                 buf = io.BytesIO()
