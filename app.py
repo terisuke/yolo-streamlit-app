@@ -8,7 +8,10 @@ import cv2
 from PIL import Image
 import io
 
-def initialize_gcs_client():
+def initialize_gcs_client() -> storage.Client:
+    """
+    Google Cloud Storageクライアントを初期化します。
+    """
     try:
         service_account_path = os.path.join("config", "service_account.json")
         if os.path.exists(service_account_path):
@@ -20,7 +23,10 @@ def initialize_gcs_client():
         st.error(f"GCS init error: {e}")
         return None
 
-def download_model(storage_client, bucket, blob_name):
+def download_model(storage_client: storage.Client, bucket: str, blob_name: str) -> str:
+    """
+    指定されたバケットからモデルをダウンロードします。
+    """
     try:
         bucket_obj = storage_client.bucket(bucket)
         blob = bucket_obj.blob(blob_name)
@@ -31,7 +37,10 @@ def download_model(storage_client, bucket, blob_name):
         st.error(f"Model download error: {e}")
         return None
 
-def load_yolo_model():
+def load_yolo_model() -> None:
+    """
+    YOLOモデルをロードします。
+    """
     if "model" not in st.session_state or st.session_state.model is None:
         client = initialize_gcs_client()
         if client:
@@ -39,116 +48,195 @@ def load_yolo_model():
             if path:
                 st.session_state.model = YOLO(path)
 
-def draw_bounding_box_offset(
+def offset_mask_by_distance(mask: np.ndarray, offset_px: int) -> np.ndarray:
+    """
+    マスクを距離変換して内側にオフセットしたバイナリマスクを返します。
+    """
+    bin_mask = (mask > 0).astype(np.uint8)
+    dist = cv2.distanceTransform(bin_mask, cv2.DIST_L2, 5)
+    shrunk = (dist >= offset_px).astype(np.uint8)
+    return shrunk
+
+def draw_910mm_grid_on_rect(
     image: np.ndarray,
-    box: tuple[int,int,int,int],
-    offset_px: int = 10,
-    fill_color=(0,0,255),
-    alpha=0.3,
-    grid_cell_px: int = 50
+    rect: tuple[int,int,int,int],
+    grid_mm: float = 910.0,
+    dpi: float = 300.0,
+    scale: float = 1.0,
+    fill_color=(255,0,0),
+    alpha=0.4,
+    line_color=(0,0,255),
+    line_thickness=2
 ) -> np.ndarray:
     """
-    1) バウンディングボックスをそのまま描画(緑枠)
-    2) 内側にoffset_pxだけ縮めた矩形を赤塗り潰し
-    3) そこに910mm相当のグリッド(ここでは固定50pxとしてサンプル)
+    rect=(x,y,w,h)に半透明塗り潰し & 指定mm格子を描画。
+    ここでは簡単に 1mm= (dpi/25.4) px * scale という換算。
     """
     out = image.copy()
-    
-    x1,y1,x2,y2 = box
-    # 枠を描画(緑)
-    cv2.rectangle(out, (x1,y1), (x2,y2), (0,255,0), 2)
-    
-    # 内側オフセット
-    nx1, ny1 = x1+offset_px, y1+offset_px
-    nx2, ny2 = x2-offset_px, y2-offset_px
-    if nx1>=nx2 or ny1>=ny2:
-        # オフセットが大きすぎる場合
-        return out
-    
+
+    x, y, w_, h_ = rect
+    x2, y2 = x + w_, y + h_
+
     # 半透明塗り潰し
     overlay = out.copy()
-    cv2.rectangle(overlay, (nx1,ny1), (nx2,ny2), fill_color, cv2.FILLED)
-    cv2.addWeighted(overlay, alpha, out, 1-alpha, 0, out)
-    
-    # グリッド(青)を描画: 単純に50pxごとにラインを引くだけ
-    for yy in range(ny1, ny2, grid_cell_px):
-        cv2.line(out, (nx1,yy), (nx2,yy), (255,0,0), 2)
-    for xx in range(nx1, nx2, grid_cell_px):
-        cv2.line(out, (xx,ny1), (xx,ny2), (255,0,0), 2)
-    
+    cv2.rectangle(overlay, (x, y), (x2, y2), fill_color, cv2.FILLED)
+    cv2.addWeighted(overlay, alpha, out, 1 - alpha, 0, out)
+
+    # 外枠
+    cv2.rectangle(out, (x, y), (x2, y2), (0, 0, 255), 2)
+
+    def mm_to_px(mm: float) -> int:
+        inch = mm / 25.4
+        px = inch * dpi * scale
+        return int(round(px))
+
+    cell_px = mm_to_px(grid_mm)
+
+    # フォールバック処理
+    if cell_px > w_ or cell_px > h_:
+        fallback = max(1, min(w_, h_) // 5)
+        st.warning(f"cell_px={cell_px} が大きすぎるため、{fallback}pxに調整します。")
+        cell_px = fallback
+
+    # 格子線を描画
+    for gy in range(y, y2, cell_px):
+        cv2.line(out, (x, gy), (x2, gy), line_color, line_thickness)
+    for gx in range(x, x2, cell_px):
+        cv2.line(out, (gx, y), (gx, y2), line_color, line_thickness)
+
     return out
 
-def process_image(image_file, offset_px=50):
+def process_image(
+    image_file,
+    near_offset_px: int = 100,
+    far_offset_px: int = 50,
+    grid_mm: float = 910.0,
+    dpi: float = 300.0,
+    scale: float = 1.0
+) -> Image.Image | None:
     """
-    シンプルに YOLO -> Houseのバウンディングボックスを取り、
-    そこを内側にオフセットして赤塗り潰し+グリッド描画。
+    1) YOLOセグメンテーションで "House" と "Road" マスクを合成
+    2) Roadから近いHouseは near_offset_px でオフセット、
+       それ以外は far_offset_px でオフセット
+    3) boundingRectをとり、そこに grid_mm 間隔の格子を描画
+    4) Houseマスク(元サイズ)は緑色半透明で表示
     """
     try:
         image_bytes = image_file.getvalue()
+
+        # 1) 推論実行
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             tmp.write(image_bytes)
             tmp.close()
-            
-            results = st.session_state.model(tmp.name, task="detect")
-            # detectモード: バウンディングボックスが確実に取れる
-            
-            # orig_img (BGR)
-            orig = results[0].orig_img
-            if orig is None:
-                st.error("orig_img not found.")
-                return None
-            
-            h, w = orig.shape[:2]
-            # 変換用にコピー
-            out_bgr = orig.copy()
-            
-            # 各検出のバウンディングボックスを確認
-            boxes = results[0].boxes
-            if boxes is None or len(boxes)==0:
-                st.warning("No detection found.")
-            else:
-                for box, cls_id in zip(boxes.xyxy, boxes.cls):
-                    # box: [x1,y1,x2,y2]
-                    # cls_id: クラスID (ex: 0=house?)
-                    # confidence= boxes.conf
-                    if int(cls_id) == 1:  # 1をHouseクラスにしている例
-                        x1,y1,x2,y2 = box.int().tolist()  # int()でピクセル座標に
-                        
-                        # Draw offset
-                        out_bgr = draw_bounding_box_offset(
-                            out_bgr,
-                            (x1,y1,x2,y2),
-                            offset_px=offset_px,
-                            fill_color=(0,0,255),
-                            alpha=0.4,
-                            grid_cell_px=50 # 簡易固定
-                        )
-            
-            # convert BGR->RGB
-            rgb = cv2.cvtColor(out_bgr, cv2.COLOR_BGR2RGB)
-            return Image.fromarray(rgb)
+            results = st.session_state.model(tmp.name, task="segment")
+
+        orig = results[0].orig_img  # shape e.g. (1755, 2481, 3)
+        if orig is None:
+            st.error("orig_img not found.")
+            return None
+
+        # 2) YOLOマスクは小さい(480x640など)なので、後で元サイズ(2481x1755)に合わせる
+        h, w = orig.shape[:2]  # h=1755, w=2481
+
+        HOUSE_CLASS_ID = 1
+        ROAD_CLASS_ID = 2
+
+        house_mask = np.zeros((h, w), dtype=np.uint8)  # (1755,2481)
+        road_mask  = np.zeros((h, w), dtype=np.uint8)
+
+        # 3) セグメンテーションマスクを合成
+        if results[0].masks is not None:
+            for seg_data, cls_id in zip(results[0].masks.data, results[0].boxes.cls):
+                m = seg_data.cpu().numpy().astype(np.uint8)
+                # YOLO推論で得られるm.shape は(480,640)など
+                # → 幅=640, 高さ=480
+                # origは 幅=2481, 高さ=1755
+                # なので (w, h)=(2481,1755) でリサイズ
+                # NOTE: cv2.resize expects (width, height) as second argument
+                resized = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
+
+                if int(cls_id) == HOUSE_CLASS_ID:
+                    house_mask = np.maximum(house_mask, resized)
+                elif int(cls_id) == ROAD_CLASS_ID:
+                    road_mask = np.maximum(road_mask, resized)
+
+        # (A) Houseを緑色半透明で表示
+        out_bgr = orig.copy()
+        overlay = out_bgr.copy()
+        overlay[house_mask==1] = (0,255,0)
+        cv2.addWeighted(overlay, 0.3, out_bgr, 0.7, 0, out_bgr)
+
+        # (B) Road距離で「near/far」に分けて別オフセット
+        bin_road = (road_mask>0).astype(np.uint8)
+        dist_road = cv2.distanceTransform(bin_road, cv2.DIST_L2, 5)
+        near_threshold = 20
+        near_road = (dist_road < near_threshold).astype(np.uint8)
+
+        near_house = (house_mask & near_road)
+        far_house  = (house_mask & (1 - near_road))
+
+        shrunk_near = offset_mask_by_distance(near_house, near_offset_px)
+        shrunk_far  = offset_mask_by_distance(far_house,  far_offset_px)
+        final_house = np.maximum(shrunk_near, shrunk_far)
+
+        # (C) boundingRect + グリッド
+        contours, _ = cv2.findContours(final_house, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if len(contours)==0:
+            st.warning("No house after offset.")
+        else:
+            big_contour = max(contours, key=cv2.contourArea)
+            x,y,wc,hc = cv2.boundingRect(big_contour)
+
+            out_bgr = draw_910mm_grid_on_rect(
+                image=out_bgr,
+                rect=(x,y,wc,hc),
+                grid_mm=grid_mm,
+                dpi=dpi,
+                scale=scale,
+                fill_color=(255,0,0),
+                alpha=0.4,
+                line_color=(0,0,255),
+                line_thickness=2
+            )
+
+        rgb = cv2.cvtColor(out_bgr, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(rgb)
 
     except Exception as e:
         st.error(f"process_image error: {e}")
         return None
 
-def main():
+def main() -> None:
     load_yolo_model()
     if st.session_state.model is None:
         st.warning("モデルロード失敗")
         return
-    
-    offset_px = st.number_input("オフセット(px)", 0, 500, 50, 10)
+
+    st.title("Fix shape mismatch: YOLO masks(480x640) → Original(1755x2481)")
+
+    offset_near = st.number_input("Roadに近い領域のオフセット(px)", 0, 5000, 100, 10)
+    offset_far  = st.number_input("Road以外領域のオフセット(px)", 0, 5000, 50, 10)
+    grid_mm     = st.number_input("グリッド間隔(mm)", 1.0, 10000.0, 910.0, 10.0)
+    dpi_val     = st.number_input("DPI", 1.0, 1200.0, 300.0, 1.0)
+    scale_val   = st.number_input("スケール(例:1.0)", 0.01, 10.0, 1.0, 0.01)
+
     upfile = st.file_uploader("画像アップロード", ["jpg","jpeg","png"])
     if upfile:
-        st.image(upfile, caption="アップロード画像", use_container_width=True)
-        with st.spinner("Detectモード推論中..."):
-            res = process_image(upfile, offset_px=offset_px)
-            if res:
-                st.image(res, caption="バウンディングボックス+オフセット領域+グリッド", use_container_width=True)
+        st.image(upfile, "アップロード画像", use_container_width=True)
+        with st.spinner("処理中..."):
+            result = process_image(
+                image_file=upfile,
+                near_offset_px=offset_near,
+                far_offset_px=offset_far,
+                grid_mm=grid_mm,
+                dpi=dpi_val,
+                scale=scale_val
+            )
+            if result:
+                st.image(result, "結果画像", use_container_width=True)
                 buf = io.BytesIO()
-                res.save(buf, format="PNG")
-                st.download_button("結果DL", buf.getvalue(), "result.png","image/png")
+                result.save(buf, "PNG")
+                st.download_button("結果をダウンロード", buf.getvalue(), "result.png", "image/png")
 
 if __name__=="__main__":
     main()
