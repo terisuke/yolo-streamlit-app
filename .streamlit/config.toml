@@ -1,0 +1,10 @@
+[server]
+fileWatcherType = "none"
+
+[runner]
+# メモリ使用量を減らすための設定
+fastReruns = true
+
+[browser]
+# 自動でブラウザを開かない設定（オプション）
+gatherUsageStats = false 
