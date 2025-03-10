@@ -1,4 +1,6 @@
 import os
+import sys
+import traceback
 # NumPy互換性問題を解決するための環境変数設定
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 # CUDAエラーを回避（GPUを使用しない）
@@ -10,18 +12,42 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
-# まずStreamlitをインポート
-import streamlit as st
-import tempfile
-import io
-
-# 画像処理のためのNumPyとPILをインポート
-import numpy as np
-from PIL import Image
-import cv2
-
-# 分離したモデルローダーからYOLOモデル関連機能をインポート
-from model_load import load_yolo_model, initialize_gcs_client
+try:
+    print(f"Python version: {sys.version}")
+    print(f"Python executable: {sys.executable}")
+    print(f"Current working directory: {os.getcwd()}")
+    print(f"Platform: {sys.platform}")
+    print("Starting imports...")
+    
+    # まずStreamlitをインポート
+    import streamlit as st
+    print("Streamlit imported successfully")
+    
+    import tempfile
+    import io
+    
+    # 画像処理のためのNumPyとPILをインポート
+    import numpy as np
+    print(f"NumPy version: {np.__version__}")
+    
+    from PIL import Image
+    print(f"PIL version: {Image.__version__}")
+    
+    import cv2
+    print(f"OpenCV version: {cv2.__version__}")
+    
+    # 分離したモデルローダーからYOLOモデル関連機能をインポート
+    print("Importing model_load...")
+    from model_load import load_yolo_model, initialize_gcs_client
+    print("model_load imported successfully")
+    
+    print("All imports successful!")
+except Exception as e:
+    print(f"Import error: {e}")
+    traceback.print_exc()
+    if 'st' in globals():
+        st.error(f"インポートエラー: {e}")
+        st.stop()
 
 def offset_mask_by_distance(mask: np.ndarray, offset_px: int) -> np.ndarray:
     """
@@ -182,40 +208,54 @@ def process_image(
         return None
 
 def main() -> None:
-    # YOLOモデルをロード
-    if "model" not in st.session_state or st.session_state.model is None:
-        with st.spinner("モデルをロード中..."):
-            st.session_state.model = load_yolo_model()
-            
-    if "model" not in st.session_state or st.session_state.model is None:
-        st.warning("モデルロード失敗")
-        return
+    try:
+        st.write("アプリ起動中...")
+        st.write(f"Python: {sys.version}")
+        st.write(f"NumPy: {np.__version__}")
+        st.write(f"OpenCV: {cv2.__version__}")
+        
+        # YOLOモデルをロード
+        if "model" not in st.session_state or st.session_state.model is None:
+            with st.spinner("モデルをロード中..."):
+                st.write("モデルロード開始...")
+                st.session_state.model = load_yolo_model()
+                
+        if "model" not in st.session_state or st.session_state.model is None:
+            st.error("モデルロード失敗 - 詳細はログを確認してください")
+            st.stop()
+        else:
+            st.success("モデルロード成功！")
 
-    st.title("Fix shape mismatch: YOLO masks(480x640) → Original(1755x2481)")
+        st.title("Fix shape mismatch: YOLO masks(480x640) → Original(1755x2481)")
 
-    offset_near = st.number_input("Roadに近い領域のオフセット(px)", 0, 5000, 100, 10)
-    offset_far  = st.number_input("Road以外領域のオフセット(px)", 0, 5000, 50, 10)
-    grid_mm     = st.number_input("グリッド間隔(mm)", 1.0, 10000.0, 910.0, 10.0)
-    dpi_val     = st.number_input("DPI", 1.0, 1200.0, 300.0, 1.0)
-    scale_val   = st.number_input("スケール(例:1.0)", 0.01, 10.0, 1.0, 0.01)
+        offset_near = st.number_input("Roadに近い領域のオフセット(px)", 0, 5000, 100, 10)
+        offset_far  = st.number_input("Road以外領域のオフセット(px)", 0, 5000, 50, 10)
+        grid_mm     = st.number_input("グリッド間隔(mm)", 1.0, 10000.0, 910.0, 10.0)
+        dpi_val     = st.number_input("DPI", 1.0, 1200.0, 300.0, 1.0)
+        scale_val   = st.number_input("スケール(例:1.0)", 0.01, 10.0, 1.0, 0.01)
 
-    upfile = st.file_uploader("画像アップロード", ["jpg","jpeg","png"])
-    if upfile:
-        st.image(upfile, "アップロード画像", use_container_width=True)
-        with st.spinner("処理中..."):
-            result = process_image(
-                image_file=upfile,
-                near_offset_px=offset_near,
-                far_offset_px=offset_far,
-                grid_mm=grid_mm,
-                dpi=dpi_val,
-                scale=scale_val
-            )
-            if result:
-                st.image(result, "結果画像", use_container_width=True)
-                buf = io.BytesIO()
-                result.save(buf, "PNG")
-                st.download_button("結果をダウンロード", buf.getvalue(), "result.png", "image/png")
+        upfile = st.file_uploader("画像アップロード", ["jpg","jpeg","png"])
+        if upfile:
+            st.image(upfile, "アップロード画像", use_container_width=True)
+            with st.spinner("処理中..."):
+                result = process_image(
+                    image_file=upfile,
+                    near_offset_px=offset_near,
+                    far_offset_px=offset_far,
+                    grid_mm=grid_mm,
+                    dpi=dpi_val,
+                    scale=scale_val
+                )
+                if result:
+                    st.image(result, "結果画像", use_container_width=True)
+                    buf = io.BytesIO()
+                    result.save(buf, "PNG")
+                    st.download_button("結果をダウンロード", buf.getvalue(), "result.png", "image/png")
+
+    except Exception as e:
+        st.error(f"エラーが発生しました: {e}")
+        traceback.print_exc()
+        st.stop()
 
 if __name__=="__main__":
     main()

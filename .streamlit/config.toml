@@ -1,9 +1,14 @@
 [server]
 fileWatcherType = "none"
+# デバッグ情報を表示
+enableStaticServing = true
+enableCORS = false
 
 [runner]
 # メモリ使用量を減らすための設定
 fastReruns = true
+# Python 3.11との互換性を高める設定
+magicEnabled = false
 
 [browser]
 # 自動でブラウザを開かない設定（オプション）
@@ -13,4 +18,10 @@ gatherUsageStats = false
 # NumPy互換性問題を回避するための設定
 KMP_DUPLICATE_LIB_OK = "TRUE"
 # GPUを使用しない設定
-CUDA_VISIBLE_DEVICES = "" 
+CUDA_VISIBLE_DEVICES = ""
+# スレッド数制御
+OMP_NUM_THREADS = "1"
+OPENBLAS_NUM_THREADS = "1"
+MKL_NUM_THREADS = "1"
+# デバッグ情報を表示
+PYTHONUNBUFFERED = "1" 
