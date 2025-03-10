@@ -8,3 +8,9 @@ fastReruns = true
 [browser]
 # 自動でブラウザを開かない設定（オプション）
 gatherUsageStats = false 
+
+[env]
+# NumPy互換性問題を回避するための設定
+KMP_DUPLICATE_LIB_OK = "TRUE"
+# GPUを使用しない設定
+CUDA_VISIBLE_DEVICES = "" 

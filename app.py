@@ -1,5 +1,10 @@
-import streamlit as st
 import os
+# NumPy互換性問題を解決するための環境変数設定
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+# CUDAエラーを回避（GPUを使用しない）
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+import streamlit as st
 import tempfile
 from google.cloud import storage
 from ultralytics import YOLO
