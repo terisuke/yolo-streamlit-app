@@ -3,55 +3,25 @@ import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 # CUDAエラーを回避（GPUを使用しない）
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
+# スレッド数制御（NumPyの安定性向上）
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
+# まずStreamlitをインポート
 import streamlit as st
 import tempfile
-from google.cloud import storage
-from ultralytics import YOLO
-import numpy as np
-import cv2
-from PIL import Image
 import io
 
-def initialize_gcs_client() -> storage.Client:
-    """
-    Google Cloud Storageクライアントを初期化します。
-    """
-    try:
-        service_account_path = os.path.join("config", "service_account.json")
-        if os.path.exists(service_account_path):
-            return storage.Client.from_service_account_json(service_account_path)
-        else:
-            creds = st.secrets["gcp_service_account"]
-            return storage.Client.from_service_account_info(creds)
-    except Exception as e:
-        st.error(f"GCS init error: {e}")
-        return None
+# 画像処理のためのNumPyとPILをインポート
+import numpy as np
+from PIL import Image
+import cv2
 
-def download_model(storage_client: storage.Client, bucket: str, blob_name: str) -> str:
-    """
-    指定されたバケットからモデルをダウンロードします。
-    """
-    try:
-        bucket_obj = storage_client.bucket(bucket)
-        blob = bucket_obj.blob(blob_name)
-        with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as tmp:
-            blob.download_to_filename(tmp.name)
-            return tmp.name
-    except Exception as e:
-        st.error(f"Model download error: {e}")
-        return None
-
-def load_yolo_model() -> None:
-    """
-    YOLOモデルをロードします。
-    """
-    if "model" not in st.session_state or st.session_state.model is None:
-        client = initialize_gcs_client()
-        if client:
-            path = download_model(client, "yolo-v8-training", "trained_models/best.pt")
-            if path:
-                st.session_state.model = YOLO(path)
+# 分離したモデルローダーからYOLOモデル関連機能をインポート
+from model_load import load_yolo_model, initialize_gcs_client
 
 def offset_mask_by_distance(mask: np.ndarray, offset_px: int) -> np.ndarray:
     """
@@ -212,8 +182,12 @@ def process_image(
         return None
 
 def main() -> None:
-    load_yolo_model()
-    if st.session_state.model is None:
+    # YOLOモデルをロード
+    if "model" not in st.session_state or st.session_state.model is None:
+        with st.spinner("モデルをロード中..."):
+            st.session_state.model = load_yolo_model()
+            
+    if "model" not in st.session_state or st.session_state.model is None:
         st.warning("モデルロード失敗")
         return
 
